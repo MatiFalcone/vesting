@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.4.2",
+    "@truffle/hdwallet-provider": "^2.0.2",
+    "babel-polyfill": "^6.26.0",
+    "babel-register": "^6.26.0",
+    "dotenv": "^15.0.0"
+  }
+}
