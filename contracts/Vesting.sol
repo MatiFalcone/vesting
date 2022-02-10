@@ -75,6 +75,8 @@ contract Vesting {
             !hasVestingSchedule(_beneficiary),
             "vesting schedule already exists for given beneficiary"
         );
+        // Check that the contract has the balance allocated before setting the vesting
+        // PENDING
         setVestingSchedule(
             _beneficiary,
             _startDay,
@@ -202,6 +204,7 @@ contract Vesting {
         require(vesting.amount > 0);
         require(vesting.isActive);
         uint256 vestedAmount = getVestedAmount(msg.sender, today());
+        require(vestedAmount > 0, "no tokens available to withdraw");
         token.transfer(msg.sender, vestedAmount);
         /* Emits the VestingTokensGranted event. */
         emit VestingTokensGranted(msg.sender, vestedAmount, vesting.amount - vestedAmount);
