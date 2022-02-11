@@ -47,6 +47,17 @@ contract Vesting {
         uint256 pendingAmount
     );
 
+    event ValueReceived(
+        address from,
+        uint256 value
+    );
+
+    event VestingFeeCollected(
+        address feeAccount,
+        uint256 amount,
+        uint256 fee
+    );
+
     // Global variables
     address public admin;
     address payable feeAccount;
@@ -61,10 +72,23 @@ contract Vesting {
         token = _token;
     }
 
+    receive() external payable {
+        require(msg.value > 0);
+        emit ValueReceived(msg.sender, msg.value);
+        uint256 contractFee = calculateFee(msg.value);
+        token.transfer(feeAccount, contractFee);
+        emit VestingFeeCollected(feeAccount, msg.value, fee);
+    }
+
     // ============================================================================
     // === Methods for administratively creating a vesting schedule for an account.
     // ============================================================================
     
+    function calculateFee(uint256 amount) internal view returns (uint256 __fee) {
+        __fee = amount * fee / 1000;
+        return __fee;
+    }
+
     function vestingFee() public view virtual returns (uint32) {
         return fee;
     }
@@ -84,7 +108,7 @@ contract Vesting {
         uint32 _duration,
         uint32 _interval,
         uint256 _amount
-    ) external payable onlyOwner {
+    ) public payable onlyAdminOrContract {
         require(
             !hasVestingSchedule(_beneficiary),
             "vesting schedule already exists for given beneficiary"
@@ -105,9 +129,15 @@ contract Vesting {
 
     }
 
-    modifier onlyOwner() {
+    modifier onlyAdmin() {
         // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
-        require(msg.sender == admin, "only owner can call this function");
+        require(msg.sender == admin, "only admin can call this function");
+        _;
+    }
+
+    modifier onlyAdminOrContract() {
+        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
+        require(msg.sender == admin || msg.sender == address(this), "only admin or contract can call this function");
         _;
     }
 
@@ -206,9 +236,21 @@ contract Vesting {
     modifier onlyAdminOrSelf(address _account) {
         require(
             msg.sender == admin || msg.sender == _account,
-            "caller is not the Owner or Self"
+            "caller is not the Admin or Self"
         );
         _;
+    }
+
+    function transferVestingSchedule(address _from, address _to) onlyAdminOrSelf(_from) external payable returns (bool ok) {
+        require(hasVestingSchedule(msg.sender), "no vesting schedule for caller");
+        require(hasVestingSchedule(_to), "the new beneficiary already has a vesting schedule");
+        VestingSchedule storage vesting = _vestingSchedules[msg.sender];
+        require(vesting.isActive, "the vesting schedule you want to transfer is not active");
+        // Create a new vesting schedule for the new beneficiary with the same information as the original vesting schedule
+        addVestingSchedule(_to, vesting.startDay, vesting.cliffDuration, vesting.duration, vesting.interval, vesting.amount);
+        // Mark the original vesting schedule as inactive
+        revokeVesting(_from, today());
+        return true;
     }
 
     function withdraw() external payable returns (bool ok) {
@@ -406,23 +448,6 @@ contract Vesting {
         return (amount <= getVestedAmount(account, onDay));
     }
 
-    /**
-     * @dev Modifier to make a function callable only when the amount is sufficiently vested right now.
-     *
-     * @param account = The account to check.
-     * @param amount = The required amount of vested funds.
-     */
-    modifier onlyIfFundsAvailableNow(address account, uint256 amount) {
-        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
-        require(
-            _fundsAreAvailableOn(account, amount, today()),
-            token.balanceOf(account) < amount
-                ? "insufficient funds"
-                : "insufficient vested funds"
-        );
-        _;
-    }
-
     // =========================================================================
     // === Grant revocation
     // =========================================================================
@@ -436,13 +461,11 @@ contract Vesting {
      * @param onDay = The date upon which the vesting schedule will be effectively terminated,
      *   in days since the UNIX epoch (start of day).
      */
-    function revokeVesting(address account, uint32 onDay)
-        public
-        onlyOwner
+    function revokeVesting(address account, uint32 onDay) public onlyAdminOrContract
         returns (bool ok)
     {
         VestingSchedule storage vesting = _vestingSchedules[account];
-        uint256 notVestedAmount;
+        //uint256 notVestedAmount;
 
         // Make sure a vesting schedule has previously been set.
         require(vesting.isActive, "no active vesting");
@@ -451,7 +474,7 @@ contract Vesting {
         // Don"t let grantor revoke anf portion of vested amount.
         require(onDay >= today(), "cannot revoke vested holdings");
 
-        notVestedAmount = getNotVestedAmount(account, onDay);
+        //notVestedAmount = getNotVestedAmount(account, onDay);
 
         // Kill the grant by updating isActive.
         _vestingSchedules[account].isActive = false;

@@ -18,7 +18,7 @@ describe('Vesting', function() {
     // Advance to the next block to correctly read time in the solidity "now" function interpreted by ganache
     admin = deployer;
     token = await Token.new();
-    fee = web3.utils.toBN(5)
+    fee = 5; // 0.5% fee | 10 = 1% fee and so on
     vesting = await Vesting.new(token.address, fee, feeAccount);
     //console.log(vesting.methods);
   });
