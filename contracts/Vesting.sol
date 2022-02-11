@@ -50,11 +50,13 @@ contract Vesting {
     // Global variables
     address public admin;
     address payable feeAccount;
+    uint32 public fee;
     IERC20 public token;
-
-    constructor(IERC20 _token, address payable _feeAccount) {
+    
+    constructor(IERC20 _token, uint32 _fee, address payable _feeAccount) {
         require(address(_token) != address(0));
         admin = msg.sender;
+        fee = _fee;
         feeAccount = _feeAccount;
         token = _token;
     }
@@ -62,6 +64,18 @@ contract Vesting {
     // ============================================================================
     // === Methods for administratively creating a vesting schedule for an account.
     // ============================================================================
+    
+    function vestingFee() public view virtual returns (uint32) {
+        return fee;
+    }
+
+    function vestingFeeAccount() public view virtual returns (address) {
+        return feeAccount;
+    }
+
+    function vestingToken() public view virtual returns (IERC20) {
+        return token;
+    }
 
     function addVestingSchedule(
         address _beneficiary,
@@ -77,6 +91,9 @@ contract Vesting {
         );
         // Check that the contract has the balance allocated before setting the vesting
         // PENDING
+
+        require(token.balanceOf(address(this)) >= _amount, "please allocate the tokens to the contract");
+
         setVestingSchedule(
             _beneficiary,
             _startDay,

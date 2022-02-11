@@ -51,7 +51,7 @@ module.exports = {
     development: {
       host: "127.0.0.1",     // Localhost (default: none)
       port: 8545,            // Standard Ethereum port (default: none)
-      network_id: "*",       // Any network (default: none)
+      network_id: "*"       // Any network (default: none)
     },
     bsctestnet: {
       provider: () => new HDWalletProvider(privateKey, "https://data-seed-prebsc-1-s1.binance.org:8545", 0, 5),
@@ -108,9 +108,6 @@ module.exports = {
       optimizer: {
         enabled: true,
         runs: 200,
-        details: {
-          yul: false,
-        }
       }
       //  evmVersion: "byzantium"
       // }
