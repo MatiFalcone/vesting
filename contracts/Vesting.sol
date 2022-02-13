@@ -47,13 +47,9 @@ contract Vesting {
         uint256 pendingAmount
     );
 
-    event ValueReceived(
-        address from,
-        uint256 value
-    );
-
     event VestingFeeCollected(
         address feeAccount,
+        uint256 originalValue,
         uint256 amount,
         uint256 fee
     );
@@ -72,18 +68,19 @@ contract Vesting {
         token = _token;
     }
 
-    receive() external payable {
-        require(msg.value > 0);
-        emit ValueReceived(msg.sender, msg.value);
-        uint256 contractFee = calculateFee(msg.value);
-        token.transfer(feeAccount, contractFee);
-        emit VestingFeeCollected(feeAccount, msg.value, fee);
-    }
-
     // ============================================================================
     // === Methods for administratively creating a vesting schedule for an account.
     // ============================================================================
     
+    function deposit(uint256 amount) onlyAdmin external returns (bool ok) {
+        require(amount > 0);
+        uint256 contractFee = calculateFee(amount);
+        token.transferFrom(msg.sender, address(this), amount - contractFee);
+        token.transferFrom(msg.sender, feeAccount, contractFee);
+        emit VestingFeeCollected(feeAccount, amount, contractFee, fee);
+        return true;
+    }
+
     function calculateFee(uint256 amount) internal view returns (uint256 __fee) {
         __fee = amount * fee / 1000;
         return __fee;
@@ -108,13 +105,11 @@ contract Vesting {
         uint32 _duration,
         uint32 _interval,
         uint256 _amount
-    ) public payable onlyAdminOrContract {
+    ) public onlyAdmin {
         require(
             !hasVestingSchedule(_beneficiary),
             "vesting schedule already exists for given beneficiary"
         );
-        // Check that the contract has the balance allocated before setting the vesting
-        // PENDING
 
         require(token.balanceOf(address(this)) >= _amount, "please allocate the tokens to the contract");
 
@@ -127,18 +122,6 @@ contract Vesting {
             _amount
         );
 
-    }
-
-    modifier onlyAdmin() {
-        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
-        require(msg.sender == admin, "only admin can call this function");
-        _;
-    }
-
-    modifier onlyAdminOrContract() {
-        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
-        require(msg.sender == admin || msg.sender == address(this), "only admin or contract can call this function");
-        _;
     }
 
     function hasVestingSchedule(address account)
@@ -233,15 +216,7 @@ contract Vesting {
         );
     }
 
-    modifier onlyAdminOrSelf(address _account) {
-        require(
-            msg.sender == admin || msg.sender == _account,
-            "caller is not the Admin or Self"
-        );
-        _;
-    }
-
-    function transferVestingSchedule(address _from, address _to) onlyAdminOrSelf(_from) external payable returns (bool ok) {
+    function transferVestingSchedule(address _from, address _to) onlyAdminOrSelf(_from) external returns (bool ok) {
         require(hasVestingSchedule(msg.sender), "no vesting schedule for caller");
         require(hasVestingSchedule(_to), "the new beneficiary already has a vesting schedule");
         VestingSchedule storage vesting = _vestingSchedules[msg.sender];
@@ -253,7 +228,7 @@ contract Vesting {
         return true;
     }
 
-    function withdraw() external payable returns (bool ok) {
+    function withdraw() external returns (bool ok) {
         require(hasVestingSchedule(msg.sender), "no vesting schedule for caller");
         VestingSchedule storage vesting = _vestingSchedules[msg.sender];
         require(
@@ -461,7 +436,7 @@ contract Vesting {
      * @param onDay = The date upon which the vesting schedule will be effectively terminated,
      *   in days since the UNIX epoch (start of day).
      */
-    function revokeVesting(address account, uint32 onDay) public onlyAdminOrContract
+    function revokeVesting(address account, uint32 onDay) public onlyAdmin
         returns (bool ok)
     {
         VestingSchedule storage vesting = _vestingSchedules[account];
@@ -484,6 +459,22 @@ contract Vesting {
         
         return true;
 
+    }
+
+    // Modifiers
+    
+    modifier onlyAdmin() {
+        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
+        require(msg.sender == admin, "only admin can call this function");
+        _;
+    }
+
+    modifier onlyAdminOrSelf(address _account) {
+        require(
+            msg.sender == admin || msg.sender == _account,
+            "caller is not the Admin or Self"
+        );
+        _;
     }
 
 }
