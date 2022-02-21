@@ -149,6 +149,10 @@ contract Vesting {
         return fee;
     }
 
+    function getFeesForToken(address token) public view virtual returns (uint256) {
+        return _fees[token];
+    }
+
     function vestingFeeAccount() public view virtual returns (address) {
         return feeAccount;
     }
