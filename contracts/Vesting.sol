@@ -590,12 +590,6 @@ contract Vesting {
 
      // Modifiers
 
-    modifier onlyAdmin() {
-        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
-        require(msg.sender == admin, "only admin can call this function");
-        _;
-    }
-
     modifier onlyAllocator(address account, address token) {
         // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
         require(
