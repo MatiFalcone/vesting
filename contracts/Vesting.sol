@@ -71,7 +71,7 @@ contract Vesting {
     // ============================================================================
     // === Methods for administratively creating a vesting schedule for an account.
     // ============================================================================
-
+ 
     // When someone deposits coins to the contract, we need to have a mechanism to know
     // only that person is able to allocate those funds to beneficiaries. If not, anybody
     // would be able to allocate funds to beneficiaries if they know how much balance
@@ -584,18 +584,7 @@ contract Vesting {
         return true;
     }
 
-    function withdrawFees(IERC20 token) public payable onlyAdmin {
-        uint256 amount = getFeesFor(address(token));
-        require(token.balanceOf(address(this)) >= amount);
-        require(token.transfer(msg.sender, amount));
-        _fees[address(token)] = 0;
-    }
-
-    function getFeesFor(address token) internal view returns (uint256) {
-        return _fees[token];
-    }
-
-    // Modifiers
+     // Modifiers
 
     modifier onlyAdmin() {
         // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
