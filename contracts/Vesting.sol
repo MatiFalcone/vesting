@@ -4,7 +4,6 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract Vesting {
-
     // Structs
     struct VestingSchedule {
         uint32 startDay; /* Start day of the grant, in days since the UNIX epoch (start of day). */
@@ -12,78 +11,138 @@ contract Vesting {
         uint32 duration; /* Duration of the vesting schedule, with respect to the grant start day, in days. */
         uint32 interval; /* Duration in days of the vesting interval. */
         uint256 amount; /* Total number of tokens that vest. */
-        bool isActive;
+        address allocator; /* Address of the person granting the Vesting. We will use this field to determine is the vesting schedule is active as well, since we can add more fields to this Struct as Solidity has the stack limited. */
     }
 
     // Mappings
-    mapping(address => VestingSchedule) public _vestingSchedules;
-
-    // // Date-related constants for sanity-checking dates to reject obvious erroneous inputs
-    // // and conversions from seconds to days and years that are more or less leap year-aware.
-    // uint32 private constant THOUSAND_YEARS_DAYS = 365243; /* See https://www.timeanddate.com/date/durationresult.html?m1=1&d1=1&y1=2000&m2=1&d2=1&y2=3000 */
-    // uint32 private constant TEN_YEARS_DAYS = THOUSAND_YEARS_DAYS / 100; /* Includes leap years (though it doesn't really matter) */
-    // uint32 private constant JAN_1_2000_DAYS = 946684800 / (24 * 60 * 60);
-    // uint32 private constant JAN_1_3000_DAYS = JAN_1_2000_DAYS + 365243;
+    mapping(address => mapping(address => VestingSchedule))
+        public _vestingSchedules;
+    mapping(address => mapping(address => uint256)) public _allocations;
+    mapping(address => uint256) public _fees;
 
     // Events
     event VestingScheduleCreated(
+        address indexed allocator,
+        address indexed token,
         address indexed beneficiary,
         uint32 startDay,
         uint32 cliffDuration,
         uint32 duration,
         uint32 interval,
-        uint256 amount,
-        bool isActive
+        uint256 amount
     );
 
     event GrantRevoked(
-        address indexed grantHolder, 
+        address indexed token,
+        address indexed grantHolder,
         uint32 onDay
     );
 
     event VestingTokensGranted(
+        address indexed token,
         address indexed beneficiary,
         uint256 withdrawAmount,
         uint256 pendingAmount
     );
 
     event VestingFeeCollected(
-        address feeAccount,
-        uint256 originalValue,
+        address indexed token,
         uint256 amount,
-        uint256 fee
+        uint256 originalValue,
+        uint256 fee,
+        address feeAccount
     );
 
     // Global variables
     address public admin;
     address payable feeAccount;
     uint32 public fee;
-    IERC20 public token;
-    
-    constructor(IERC20 _token, uint32 _fee, address payable _feeAccount) {
-        require(address(_token) != address(0));
+
+    constructor(uint32 _fee, address payable _feeAccount) {
+        require(
+            address(_feeAccount) != address(0),
+            "Vesting: Fee Account is ZERO_ADDRESS"
+        );
         admin = msg.sender;
         fee = _fee;
         feeAccount = _feeAccount;
-        token = _token;
     }
 
     // ============================================================================
     // === Methods for administratively creating a vesting schedule for an account.
     // ============================================================================
-    
-    function deposit(uint256 amount) onlyAdmin external returns (bool ok) {
+
+    // When someone deposits coins to the contract, we need to have a mechanism to know
+    // only that person is able to allocate those funds to beneficiaries. If not, anybody
+    // would be able to allocate funds to beneficiaries if they know how much balance
+    // for a specific token is held by the contract.
+    function deposit(IERC20 token, uint256 amount) external returns (bool ok) {
         require(amount > 0);
         uint256 contractFee = calculateFee(amount);
         token.transferFrom(msg.sender, address(this), amount - contractFee);
         token.transferFrom(msg.sender, feeAccount, contractFee);
-        emit VestingFeeCollected(feeAccount, amount, contractFee, fee);
+        setInitialAllocation(msg.sender, address(token), amount - contractFee);
+        emit VestingFeeCollected(
+            address(token),
+            amount,
+            contractFee,
+            fee,
+            feeAccount
+        );
+        updateFeeForToken(address(token), amount);
         return true;
     }
 
-    function calculateFee(uint256 amount) internal view returns (uint256 __fee) {
-        __fee = amount * fee / 1000;
+    function setInitialAllocation(
+        address owner,
+        address token,
+        uint256 amount
+    ) internal returns (bool ok) {
+        if (_allocations[token][owner] > 0) {
+            _allocations[token][owner] += amount;
+        } else {
+            _allocations[token][owner] = amount;
+        }
+        return true;
+    }
+
+    function updateAllocation(
+        address owner,
+        address token,
+        uint256 amount
+    ) internal returns (bool ok) {
+        require(
+            _allocations[token][owner] >= amount,
+            "you don't have allocation for this token"
+        );
+        _allocations[token][owner] = _allocations[token][owner] - amount;
+        return true;
+    }
+
+    function releaseAllocation(
+        address owner,
+        address token,
+        uint256 amount
+    ) internal returns (bool ok) {
+        _allocations[token][owner] = _allocations[token][owner] + amount;
+        return true;
+    }
+
+    function calculateFee(uint256 amount)
+        internal
+        view
+        returns (uint256 __fee)
+    {
+        __fee = (amount * fee) / 1000;
         return __fee;
+    }
+
+    function updateFeeForToken(address token, uint256 amount)
+        internal
+        returns (bool ok)
+    {
+        _fees[token] += amount;
+        return true;
     }
 
     function vestingFee() public view virtual returns (uint32) {
@@ -94,26 +153,35 @@ contract Vesting {
         return feeAccount;
     }
 
-    function vestingToken() public view virtual returns (IERC20) {
-        return token;
-    }
-
     function addVestingSchedule(
+        IERC20 _token,
         address _beneficiary,
         uint32 _startDay,
         uint32 _cliffDuration,
         uint32 _duration,
         uint32 _interval,
         uint256 _amount
-    ) public onlyAdmin {
+    ) public {
+        // Requires that the person creating the vesting scheduled has the right allocation of tokens
         require(
-            !hasVestingSchedule(_beneficiary),
-            "vesting schedule already exists for given beneficiary"
+            _allocations[address(_token)][msg.sender] >= _amount,
+            "you haven't allocated the right amount of tokens to the contract"
         );
 
-        require(token.balanceOf(address(this)) >= _amount, "please allocate the tokens to the contract");
+        // Double check that the contract has funds. This should be always true because of previous check of allocation.
+        require(
+            _token.balanceOf(address(this)) >= _amount,
+            "please allocate the tokens to the contract"
+        );
+
+        require(
+            !hasVestingScheduleForToken(_beneficiary, address(_token)),
+            "vesting schedule of this token already exists for given beneficiary"
+        );
 
         setVestingSchedule(
+            msg.sender,
+            _token,
             _beneficiary,
             _startDay,
             _cliffDuration,
@@ -121,18 +189,19 @@ contract Vesting {
             _interval,
             _amount
         );
-
     }
 
-    function hasVestingSchedule(address account)
+    function hasVestingScheduleForToken(address account, address token)
         internal
         view
         returns (bool ok)
     {
-        return _vestingSchedules[account].isActive;
+        return _vestingSchedules[token][account].allocator != address(0);
     }
 
     function setVestingSchedule(
+        address _allocator,
+        IERC20 _token,
         address _beneficiary,
         uint32 _startDay, /* Start day of the grant, in days since the UNIX epoch (start of day). */
         uint32 _cliffDuration, /* Duration of the cliff, with respect to the grant start day, in days. */
@@ -156,12 +225,15 @@ contract Vesting {
             "invalid cliff/duration for interval"
         );
 
-        // Make sure no prior vesting is in effect for this beneficiary
-        require(!_vestingSchedules[_beneficiary].isActive, "grant already exists");
+        // Make sure no prior vesting for this token is in effect for this beneficiary
+        require(
+            !(_vestingSchedules[address(_token)][_beneficiary].allocator != address(0)),
+            "grant already exists"
+        );
 
         // Check for valid vestingAmount
         require(
-                _amount > 0 &&
+            _amount > 0 &&
                 //_startDay >= JAN_1_2000_DAYS &&
                 //_startDay < JAN_1_3000_DAYS,
                 _startDay >= 10957 &&
@@ -170,88 +242,128 @@ contract Vesting {
         );
 
         // Create and populate a vesting schedule.
-        _vestingSchedules[_beneficiary] = VestingSchedule(
+        _vestingSchedules[address(_token)][_beneficiary] = VestingSchedule(
             _startDay,
             _cliffDuration,
             _duration,
             _interval,
             _amount,
-            true /*isActive*/
+            _allocator
         );
+
+        // Update the allocation of the owner after creating the schedule
+        updateAllocation(_allocator, address(_token), _amount);
 
         // Emit the event and return success.
         emit VestingScheduleCreated(
+            _allocator,
+            address(_token),
             _beneficiary,
             _startDay,
             _cliffDuration,
             _duration,
             _interval,
-            _amount,
-            true /*isActive*/
+            _amount
         );
 
         return true;
     }
 
-    function getVestingSchedule(address _beneficiary)
+    function getVestingSchedule(address _token, address _beneficiary)
         public
         view
-        onlyAdminOrSelf(_beneficiary)
+        onlyAllocatorOrSelf(_beneficiary, _token)
         returns (
             uint32 startDay,
             uint32 cliffDuration,
             uint32 duration,
             uint32 interval,
-            uint256 amount,
-            bool isActive
+            uint256 amount
         )
     {
         return (
-            _vestingSchedules[_beneficiary].startDay,
-            _vestingSchedules[_beneficiary].cliffDuration,
-            _vestingSchedules[_beneficiary].duration,
-            _vestingSchedules[_beneficiary].interval,
-            _vestingSchedules[_beneficiary].amount,
-            _vestingSchedules[_beneficiary].isActive
+            _vestingSchedules[_token][_beneficiary].startDay,
+            _vestingSchedules[_token][_beneficiary].cliffDuration,
+            _vestingSchedules[_token][_beneficiary].duration,
+            _vestingSchedules[_token][_beneficiary].interval,
+            _vestingSchedules[_token][_beneficiary].amount
         );
     }
 
-    function transferVestingSchedule(address _from, address _to) onlyAdminOrSelf(_from) external returns (bool ok) {
-        require(hasVestingSchedule(msg.sender), "no vesting schedule for caller");
-        require(hasVestingSchedule(_to), "the new beneficiary already has a vesting schedule");
-        VestingSchedule storage vesting = _vestingSchedules[msg.sender];
-        require(vesting.isActive, "the vesting schedule you want to transfer is not active");
+    function transferVestingSchedule(
+        address _token,
+        address _from,
+        address _to
+    ) external onlyAllocatorOrSelf(_from, _token) returns (bool ok) {
+        require(
+            hasVestingScheduleForToken(_from, address(_token)),
+            "no vesting schedule found"
+        );
+        require(
+            hasVestingScheduleForToken(_to, address(_token)),
+            "the new beneficiary already has a vesting schedule for that token"
+        );
+        VestingSchedule storage vesting = _vestingSchedules[address(_token)][
+            _from
+        ];
+        require(
+            vesting.allocator != address(0),
+            "the vesting schedule you want to transfer is not active"
+        );
         // Create a new vesting schedule for the new beneficiary with the same information as the original vesting schedule
-        addVestingSchedule(_to, vesting.startDay, vesting.cliffDuration, vesting.duration, vesting.interval, vesting.amount);
+        addVestingSchedule(
+            IERC20(_token),
+            _to,
+            vesting.startDay,
+            vesting.cliffDuration,
+            vesting.duration,
+            vesting.interval,
+            vesting.amount
+        );
         // Mark the original vesting schedule as inactive
-        revokeVesting(_from, today());
+        revokeVesting(_from, _token, today());
         return true;
     }
 
-    function withdraw() external returns (bool ok) {
-        require(hasVestingSchedule(msg.sender), "no vesting schedule for caller");
-        VestingSchedule storage vesting = _vestingSchedules[msg.sender];
+    function withdraw(IERC20 _token) external returns (bool ok) {
+        require(
+            hasVestingScheduleForToken(msg.sender, address(_token)),
+            "no vesting schedule for caller on specified token"
+        );
+        VestingSchedule storage vesting = _vestingSchedules[address(_token)][
+            msg.sender
+        ];
         require(
             today() >= vesting.startDay + vesting.cliffDuration,
             "too early to withdraw or cliff not finished"
         );
         require(vesting.amount > 0);
-        require(vesting.isActive);
-        uint256 vestedAmount = getVestedAmount(msg.sender, today());
+        require(vesting.allocator != address(0));
+        uint256 vestedAmount = getVestedAmount(
+            msg.sender,
+            address(_token),
+            today()
+        );
         require(vestedAmount > 0, "no tokens available to withdraw");
-        token.transfer(msg.sender, vestedAmount);
+        _token.transfer(msg.sender, vestedAmount);
         /* Emits the VestingTokensGranted event. */
-        emit VestingTokensGranted(msg.sender, vestedAmount, vesting.amount - vestedAmount);
+        emit VestingTokensGranted(
+            address(_token),
+            msg.sender,
+            vestedAmount,
+            vesting.amount - vestedAmount
+        );
         return true;
     }
 
-    function getVestedAmount(address account, uint32 onDay)
-        internal
-        view
-        returns (uint256 amountAvailable)
-    {
-        uint256 totalTokens = _vestingSchedules[msg.sender].amount;
-        uint256 vested = totalTokens - getNotVestedAmount(account, onDay);
+    function getVestedAmount(
+        address account,
+        address token,
+        uint32 onDay
+    ) internal view returns (uint256 amountAvailable) {
+        uint256 totalTokens = _vestingSchedules[token][msg.sender].amount;
+        uint256 vested = totalTokens -
+            getNotVestedAmount(account, token, onDay);
         return vested;
     }
 
@@ -264,17 +376,18 @@ contract Vesting {
      * @param onDayOrToday = The day to check for, in days since the UNIX epoch. Can pass
      *   the special value 0 to indicate today.
      */
-    function getNotVestedAmount(address account, uint32 onDayOrToday)
-        internal
-        view
-        returns (uint256 amountNotVested)
-    {
-        VestingSchedule storage vesting = _vestingSchedules[account];
+    function getNotVestedAmount(
+        address account,
+        address token,
+        uint32 onDayOrToday
+    ) internal view returns (uint256 amountNotVested) {
+        VestingSchedule storage vesting = _vestingSchedules[token][account];
         uint32 onDay = _effectiveDay(onDayOrToday);
 
         // If there's no schedule, or before the vesting cliff, then the full amount is not vested.
         if (
-            !vesting.isActive || onDay < vesting.startDay + vesting.cliffDuration
+            !(vesting.allocator != address(0)) ||
+            onDay < vesting.startDay + vesting.cliffDuration
         ) {
             // None are vested (all are not vested)
             return vesting.amount;
@@ -342,10 +455,14 @@ contract Vesting {
      *   vestIntervalDays = number of days between vesting periods.
      *   isActive = true if the vesting schedule is currently active.
      */
-    function vestingForAccountAsOf(address account, uint32 onDayOrToday)
+    function vestingForAccountAsOf(
+        address account,
+        address token,
+        uint32 onDayOrToday
+    )
         public
         view
-        onlyAdminOrSelf(account)
+        onlyAllocatorOrSelf(account, token)
         returns (
             uint256 amountVested,
             uint256 amountNotVested,
@@ -353,12 +470,15 @@ contract Vesting {
             uint32 vestStartDay,
             uint32 vestDuration,
             uint32 cliffDuration,
-            uint32 vestIntervalDays,
-            bool isActive
+            uint32 vestIntervalDays
         )
     {
-        VestingSchedule storage vesting = _vestingSchedules[account];
-        uint256 notVestedAmount = getNotVestedAmount(account, onDayOrToday);
+        VestingSchedule storage vesting = _vestingSchedules[token][account];
+        uint256 notVestedAmount = getNotVestedAmount(
+            account,
+            token,
+            onDayOrToday
+        );
         uint256 vestingAmount = vesting.amount;
 
         return (
@@ -368,8 +488,7 @@ contract Vesting {
             vesting.startDay,
             vesting.duration,
             vesting.cliffDuration,
-            vesting.interval,
-            vesting.isActive
+            vesting.interval
         );
     }
 
@@ -390,7 +509,7 @@ contract Vesting {
      *   isActive = true if the vesting schedule is currently active.
      *   wasRevoked = true if the vesting schedule was revoked.
      */
-    function vestingAsOf(uint32 onDayOrToday)
+    function vestingAsOf(address token, uint32 onDayOrToday)
         public
         view
         returns (
@@ -400,27 +519,10 @@ contract Vesting {
             uint32 vestStartDay,
             uint32 vestDuration,
             uint32 cliffDuration,
-            uint32 vestIntervalDays,
-            bool isActive
+            uint32 vestIntervalDays
         )
     {
-        return vestingForAccountAsOf(msg.sender, onDayOrToday);
-    }
-
-    /**
-     * @dev returns true if the account has sufficient funds available to cover the given amount,
-     *   including consideration for vesting tokens.
-     *
-     * @param account = The account to check.
-     * @param amount = The required amount of vested funds.
-     * @param onDay = The day to check for, in days since the UNIX epoch.
-     */
-    function _fundsAreAvailableOn(
-        address account,
-        uint256 amount,
-        uint32 onDay
-    ) internal view returns (bool ok) {
-        return (amount <= getVestedAmount(account, onDay));
+        return vestingForAccountAsOf(msg.sender, token, onDayOrToday);
     }
 
     // =========================================================================
@@ -436,45 +538,86 @@ contract Vesting {
      * @param onDay = The date upon which the vesting schedule will be effectively terminated,
      *   in days since the UNIX epoch (start of day).
      */
-    function revokeVesting(address account, uint32 onDay) public onlyAdmin
-        returns (bool ok)
-    {
-        VestingSchedule storage vesting = _vestingSchedules[account];
+    function revokeVesting(
+        address account,
+        address token,
+        uint32 onDay
+    ) public onlyAllocator(account, token) returns (bool ok) {
+        VestingSchedule storage vesting = _vestingSchedules[token][account];
         //uint256 notVestedAmount;
 
         // Make sure a vesting schedule has previously been set.
-        require(vesting.isActive, "no active vesting");
+        require(vesting.allocator != address(0), "no active vesting");
         // Fail on likely erroneous input.
         require(onDay <= vesting.startDay + vesting.duration, "no effect");
         // Don"t let grantor revoke anf portion of vested amount.
         require(onDay >= today(), "cannot revoke vested holdings");
 
-        //notVestedAmount = getNotVestedAmount(account, onDay);
-
-        // Kill the grant by updating isActive.
-        _vestingSchedules[account].isActive = false;
+        // Kill the grant by updating the allocator to the 0x0 address.
+        vesting.allocator = address(0);
+        uint256 amountNotVested = getNotVestedAmount(account, token, onDay);
+        // Update allocation and return tokens to allocator
+        returnRemainingTokens(msg.sender, IERC20(token), amountNotVested);
 
         /* Emits the GrantRevoked event. */
-        emit GrantRevoked(account, onDay);
-        
-        return true;
+        emit GrantRevoked(token, account, onDay);
 
+        return true;
+    }
+
+    function returnRemainingTokens(
+        address allocator,
+        IERC20 token,
+        uint256 amount
+    ) internal returns (bool ok) {
+        releaseAllocation(allocator, address(token), amount);
+        require(
+            _allocations[address(token)][allocator] >= amount,
+            "not enough allocation to perform this task"
+        );
+        require(
+            token.balanceOf(address(this)) >= amount,
+            "the balance of the contract is not enough"
+        );
+        token.transfer(allocator, amount);
+        updateAllocation(allocator, address(token), amount);
+        return true;
+    }
+
+    function withdrawFees(IERC20 token) public payable onlyAdmin {
+        uint256 amount = getFeesFor(address(token));
+        require(token.balanceOf(address(this)) >= amount);
+        require(token.transfer(msg.sender, amount));
+        _fees[address(token)] = 0;
+    }
+
+    function getFeesFor(address token) internal view returns (uint256) {
+        return _fees[token];
     }
 
     // Modifiers
-    
+
     modifier onlyAdmin() {
         // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
         require(msg.sender == admin, "only admin can call this function");
         _;
     }
 
-    modifier onlyAdminOrSelf(address _account) {
+    modifier onlyAllocator(address account, address token) {
+        // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
         require(
-            msg.sender == admin || msg.sender == _account,
-            "caller is not the Admin or Self"
+            _vestingSchedules[token][account].allocator == msg.sender,
+            "only allocators can call this function"
         );
         _;
     }
 
+    modifier onlyAllocatorOrSelf(address _account, address _token) {
+        require(
+            _vestingSchedules[_token][_account].allocator == msg.sender ||
+                msg.sender == _account,
+            "caller is not the Allocator or Self"
+        );
+        _;
+    }
 }
