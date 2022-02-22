@@ -32,12 +32,6 @@ contract Vesting {
         uint256 amount
     );
 
-    event GrantRevoked(
-        address indexed token,
-        address indexed grantHolder,
-        uint32 onDay
-    );
-
     event VestingTokensGranted(
         address indexed token,
         address indexed beneficiary,
@@ -298,7 +292,7 @@ contract Vesting {
         address _token,
         address _from,
         address _to
-    ) external onlyAllocatorOrSelf(_from, _token) returns (bool ok) {
+    ) external onlySelf(_from) returns (bool ok) {
         require(
             hasVestingScheduleForToken(_from, address(_token)),
             "no vesting schedule found"
@@ -325,7 +319,7 @@ contract Vesting {
             vesting.amount
         );
         // Mark the original vesting schedule as inactive
-        revokeVesting(_from, _token, today());
+        inactiveVesting(_from, _token, today());
         return true;
     }
 
@@ -542,11 +536,11 @@ contract Vesting {
      * @param onDay = The date upon which the vesting schedule will be effectively terminated,
      *   in days since the UNIX epoch (start of day).
      */
-    function revokeVesting(
+    function inactiveVesting(
         address account,
         address token,
         uint32 onDay
-    ) public onlyAllocator(account, token) returns (bool ok) {
+    ) internal returns (bool ok) {
         VestingSchedule storage vesting = _vestingSchedules[token][account];
         //uint256 notVestedAmount;
 
@@ -562,9 +556,6 @@ contract Vesting {
         uint256 amountNotVested = getNotVestedAmount(account, token, onDay);
         // Update allocation and return tokens to allocator
         returnRemainingTokens(msg.sender, IERC20(token), amountNotVested);
-
-        /* Emits the GrantRevoked event. */
-        emit GrantRevoked(token, account, onDay);
 
         return true;
     }
@@ -590,11 +581,11 @@ contract Vesting {
 
      // Modifiers
 
-    modifier onlyAllocator(address account, address token) {
+    modifier onlySelf(address account) {
         // Distinguish insufficient overall balance from insufficient vested funds balance in failure msg.
         require(
-            _vestingSchedules[token][account].allocator == msg.sender,
-            "only allocators can call this function"
+            msg.sender == account,
+            "only self can call this function"
         );
         _;
     }
