@@ -189,6 +189,77 @@ contract Vesting {
         );
     }
 
+    function addMultipleVestingSchedules(
+        IERC20 _token,
+        address[] memory _beneficiary,
+        uint32[] memory _startDay,
+        uint32[] memory _cliffDuration,
+        uint32[] memory _duration,
+        uint32[] memory _interval,
+        uint256[] memory _amount
+    ) public {
+
+        // Requires length > 0 for every array
+        require(
+            _beneficiary.length > 0   &&
+            _startDay.length > 0      &&
+            _cliffDuration.length > 0 &&
+            _duration.length > 0      &&
+            _interval.length > 0      &&
+            _amount.length > 0
+        );
+
+        uint256 basicLength = _beneficiary.length;
+
+        // Requires same length for every array
+        require(_startDay.length == basicLength, "wrong number of arguments");
+        require(_cliffDuration.length == basicLength, "wrong number of arguments");
+        require(_duration.length == basicLength, "wrong number of arguments");
+        require(_interval.length == basicLength, "wrong number of arguments");
+        require(_amount.length == basicLength, "wrong number of arguments");
+
+        // Verify that the grantor has allocated all the necessary tokens for the vesting
+        uint256 amountSum = 0;
+        for (uint i = 0; i < basicLength; i++) {
+            amountSum += _amount[i];
+        }
+        
+        // Requires that the person creating the vesting scheduled has the right allocation of tokens (sum up)
+        require(
+            _allocations[address(_token)][msg.sender] >= amountSum,
+            "you haven't allocated the right amount of tokens for every beneficiary"
+        );
+
+        // Double check that the contract has funds. This should be always true because of previous check of allocation.
+        require(
+            _token.balanceOf(address(this)) >= amountSum,
+            "please allocate the tokens to the contract"
+        );
+
+        // Requires that no previous vesting exists for any of the beneficiaries
+        for (uint i = 0; i < basicLength; i++) {
+            require(
+                !hasVestingScheduleForToken(_beneficiary[i], address(_token)),
+                "vesting schedule of this token already exists for given beneficiary"
+            );
+        }
+
+        // Requires that no previous vesting exists for any of the beneficiaries
+        for (uint i = 0; i < basicLength; i++) {
+            setVestingSchedule(
+                msg.sender,
+                _token,
+                _beneficiary[i],
+                _startDay[i],
+                _cliffDuration[i],
+                _duration[i],
+                _interval[i],
+                _amount[i]
+            );
+        }
+
+    }
+
     function hasVestingScheduleForToken(address account, address token)
         internal
         view
